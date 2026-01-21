@@ -34,3 +34,8 @@ CREATE TABLE notification_tasks (
     is_read BOOLEAN DEFAULT FALSE,              -- 核心：已读未读
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+-- 增加标准字段的同义词/关联词字段
+ALTER TABLE standard_fields ADD COLUMN associated_terms TEXT;
+-- 创建 GIN 索引加速搜索
+CREATE INDEX idx_fields_associated_terms_gin ON standard_fields USING GIN (associated_terms gin_trgm_ops);

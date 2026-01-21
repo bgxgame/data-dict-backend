@@ -69,6 +69,7 @@ async fn main() {
         .route("/api/fields/:id", get(handlers::field_handler::get_field_details)
             .put(handlers::field_handler::update_field)
             .delete(handlers::field_handler::delete_field)) 
+        .route("/api/fields/search", get(handlers::field_handler::search_field))
 
         // 智能映射接口 (中文转英文建议)
         .route("/api/suggest", get(handlers::mapping_handler::suggest_mapping))

@@ -9,6 +9,7 @@ pub struct StandardField {
     pub field_en_name: String,
     pub composition_ids: Vec<i32>, // 关联的词根ID数组
     pub data_type: Option<String>,
+    pub associated_terms: Option<String>,
     pub is_standard: bool,
     pub created_at: Option<DateTime<Utc>>,
 }
@@ -19,4 +20,5 @@ pub struct CreateFieldRequest {
     pub field_en_name: String,
     pub composition_ids: Vec<i32>,
     pub data_type: Option<String>,
+    pub associated_terms: Option<String>,
 }

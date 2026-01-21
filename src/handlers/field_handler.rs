@@ -1,8 +1,10 @@
-use axum::{extract::{State, Path}, Json, http::StatusCode, response::IntoResponse};
+use axum::{extract::{State, Path, Query}, Json, http::StatusCode, response::IntoResponse};
 use std::sync::Arc;
 use crate::AppState;
 use crate::models::field::{CreateFieldRequest, StandardField};
 use crate::models::word_root::WordRoot;
+use crate::handlers::mapping_handler::SuggestQuery; 
+
 
 /// 1. 创建标准字段 (将智能建议的结果正式入库)
 pub async fn create_field(
@@ -10,24 +12,26 @@ pub async fn create_field(
     Json(payload): Json<CreateFieldRequest>,
 ) -> impl IntoResponse {
     // 使用 query_as! 宏，并显式处理 PostgreSQL 的 INT[] 数组类型映射
-    let result = sqlx::query_as!(
+        let result = sqlx::query_as!(
         StandardField,
         r#"
-        INSERT INTO standard_fields (field_cn_name, field_en_name, composition_ids, data_type)
-        VALUES ($1, $2, $3::INT[], $4)
+        INSERT INTO standard_fields (field_cn_name, field_en_name, composition_ids, data_type, associated_terms)
+        VALUES ($1, $2, $3::INT[], $4, $5)
         RETURNING 
             id, 
             field_cn_name, 
             field_en_name, 
             composition_ids as "composition_ids!", 
             data_type, 
+            associated_terms, -- 确保包含此项
             is_standard as "is_standard!", 
             created_at
         "#,
         payload.field_cn_name,
         payload.field_en_name,
         &payload.composition_ids,
-        payload.data_type
+        payload.data_type,
+        payload.associated_terms // 传入参数
     )
     .fetch_one(&state.db)
     .await;
@@ -54,6 +58,7 @@ pub async fn list_fields(
             field_en_name, 
             composition_ids as "composition_ids!", 
             data_type, 
+            associated_terms,
             is_standard as "is_standard!", 
             created_at
         FROM standard_fields
@@ -122,10 +127,10 @@ pub async fn update_field(
     let result = sqlx::query!(
         r#"
         UPDATE standard_fields 
-        SET field_cn_name = $1, field_en_name = $2, composition_ids = $3::INT[], data_type = $4
-        WHERE id = $5
+        SET field_cn_name = $1, field_en_name = $2, composition_ids = $3::INT[], data_type = $4, associated_terms = $5
+        WHERE id = $6
         "#,
-        payload.field_cn_name, payload.field_en_name, &payload.composition_ids, payload.data_type, id
+        payload.field_cn_name, payload.field_en_name, &payload.composition_ids, payload.data_type,payload.associated_terms, id
     )
     .execute(&state.db)
     .await;
@@ -147,6 +152,31 @@ pub async fn delete_field(
 
     match result {
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+pub async fn search_field(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<SuggestQuery>,
+) -> impl IntoResponse {
+    let q = format!("%{}%", query.q);
+    let result = sqlx::query_as!(
+        StandardField,
+        r#"
+        SELECT id, field_cn_name, field_en_name, composition_ids as "composition_ids!", 
+               data_type, associated_terms, is_standard as "is_standard!", created_at
+        FROM standard_fields
+        WHERE field_cn_name ILIKE $1 OR associated_terms ILIKE $1
+        LIMIT 5
+        "#,
+        q
+    )
+    .fetch_all(&state.db)
+    .await;
+
+    match result {
+        Ok(fields) => (StatusCode::OK, Json(fields)).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
