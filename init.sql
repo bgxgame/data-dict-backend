@@ -39,3 +39,12 @@ CREATE TABLE notification_tasks (
 ALTER TABLE standard_fields ADD COLUMN associated_terms TEXT;
 -- 创建 GIN 索引加速搜索
 CREATE INDEX idx_fields_associated_terms_gin ON standard_fields USING GIN (associated_terms gin_trgm_ops);
+
+
+CREATE TABLE users (
+    id SERIAL PRIMARY KEY,
+    username VARCHAR(50) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    role VARCHAR(20) DEFAULT 'user', -- 'admin' 或 'user'
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);

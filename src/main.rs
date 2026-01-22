@@ -2,19 +2,19 @@ use axum::{
     routing::{get, post, put},
     Router,
 };
-use std::net::SocketAddr;
-use std::sync::Arc;
-use sqlx::postgres::{PgPool, PgPoolOptions};
 use dotenvy::dotenv;
-use tower_http::cors::{Any, CorsLayer};
-use tower_http::trace::TraceLayer;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use jieba_rs::Jieba;
 use once_cell::sync::Lazy;
+use sqlx::postgres::{PgPool, PgPoolOptions};
+use std::net::SocketAddr;
+use std::sync::Arc;
+use tower_http::cors::{Any, CorsLayer};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 // 声明子模块
-mod models;
 mod handlers;
+mod middleware;
+mod models;
 mod services;
 
 // 使用 Lazy 确保 Jieba 词库只在启动时加载一次，并全局可用
@@ -37,8 +37,8 @@ async fn main() {
 
     // 2. 加载 .env 环境变量
     dotenv().ok();
-    let database_url = std::env::var("DATABASE_URL")
-        .expect("DATABASE_URL must be set in .env file");
+    let database_url =
+        std::env::var("DATABASE_URL").expect("DATABASE_URL must be set in .env file");
 
     // 3. 初始化数据库连接池
     let pool = PgPoolOptions::new()
@@ -56,33 +56,53 @@ async fn main() {
         .allow_headers(Any);
 
     // 5. 构建路由
+    // 1. 认证路由 (公开)
+    let auth_routes = Router::new()
+        .route("/signup", post(handlers::auth_handler::signup))
+        .route("/login", post(handlers::auth_handler::login));
+
+    // 2. 用户查询路由 (公开)
+    let public_routes = Router::new().route("/search", get(handlers::field_handler::search_field));
+
+    // 3. 管理员路由 (受保护)
+    let admin_routes = Router::new()
+        .route(
+            "/roots",
+            post(handlers::word_root_handler::create_root)
+                .get(handlers::word_root_handler::list_roots),
+        )
+        .route(
+            "/roots/:id",
+            put(handlers::word_root_handler::update_root)
+                .delete(handlers::word_root_handler::delete_root),
+        )
+        .route(
+            "/fields",
+            post(handlers::field_handler::create_field).get(handlers::field_handler::list_fields),
+        )
+        .route(
+            "/fields/:id",
+            get(handlers::field_handler::get_field_details)
+                .put(handlers::field_handler::update_field)
+                .delete(handlers::field_handler::delete_field),
+        )
+        // 修复：建议接口属于管理员生产工具，移入 admin
+        .route("/suggest", get(handlers::mapping_handler::suggest_mapping))
+        .layer(axum::middleware::from_fn_with_state(
+            shared_state.clone(),
+            middleware::auth::guard,
+        ));
+
     let app = Router::new()
-        // 词根相关接口
-        .route("/api/roots", post(handlers::word_root_handler::create_root)
-            .get(handlers::word_root_handler::list_roots))
-        .route("/api/roots/:id", put(handlers::word_root_handler::update_root)
-            .delete(handlers::word_root_handler::delete_root))
-        
-        // 字段接口 (新增)
-        .route("/api/fields", post(handlers::field_handler::create_field)
-            .get(handlers::field_handler::list_fields))
-        .route("/api/fields/:id", get(handlers::field_handler::get_field_details)
-            .put(handlers::field_handler::update_field)
-            .delete(handlers::field_handler::delete_field)) 
-        .route("/api/fields/search", get(handlers::field_handler::search_field))
-
-        // 智能映射接口 (中文转英文建议)
-        .route("/api/suggest", get(handlers::mapping_handler::suggest_mapping))
-        
-        // 中间件：日志记录和跨域
-        .layer(TraceLayer::new_for_http())
-        .layer(cors)
-        .with_state(shared_state);
-
+        .nest("/api/auth", auth_routes)
+        .nest("/api/public", public_routes)
+        .nest("/api/admin", admin_routes)
+        .with_state(shared_state)
+        .layer(cors);
     // 6. 启动服务
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
     tracing::info!("🚀 Server started at http://{}", addr);
-    
+
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
