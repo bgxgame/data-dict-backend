@@ -52,27 +52,50 @@ pub async fn get_field_details(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i32>,
 ) -> impl IntoResponse {
-    let field = sqlx::query!(r#"SELECT composition_ids FROM standard_fields WHERE id = $1"#, id)
-        .fetch_optional(&state.db).await;
+    // 1. 获取该字段记录
+    let field_row = sqlx::query!(
+        r#"SELECT composition_ids FROM standard_fields WHERE id = $1"#,
+        id
+    )
+    .fetch_optional(&state.db)
+    .await;
 
-    match field {
-        Ok(Some(f)) => {
+    match field_row {
+        Ok(Some(row)) => {
+            let ids = row.composition_ids.unwrap_or_default();
+            if ids.is_empty() {
+                return (StatusCode::OK, Json(Vec::<WordRoot>::new())).into_response();
+            }
+
+            // 2. 修正后的查询：保持 ID 顺序
             let roots = sqlx::query_as!(
                 WordRoot,
-                r#"SELECT id, cn_name, en_abbr, en_full_name, associated_terms, remark, created_at 
-                   FROM standard_word_roots WHERE id = ANY($1::INT[])"#,
-                &f.composition_ids.unwrap_or_default()
-            ).fetch_all(&state.db).await;
+                r#"
+                SELECT 
+                    r.id, r.cn_name, r.en_abbr, r.en_full_name, 
+                    r.associated_terms, r.remark, r.created_at
+                FROM UNNEST($1::INT[]) WITH ORDINALITY AS x(id, ord)
+                JOIN standard_word_roots r ON r.id = x.id
+                ORDER BY x.ord
+                "#,
+                &ids
+            )
+            .fetch_all(&state.db)
+            .await;
 
             match roots {
                 Ok(r) => (StatusCode::OK, Json(r)).into_response(),
-                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+                Err(e) => {
+                    eprintln!("SQLx Error: {:?}", e); // 打印详细错误到终端
+                    (StatusCode::INTERNAL_SERVER_ERROR, "解析词根数据失败").into_response()
+                }
             }
         },
         Ok(None) => (StatusCode::NOT_FOUND, "未找到该字段").into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
+
 
 /// 4. 更新标准字段
 pub async fn update_field(

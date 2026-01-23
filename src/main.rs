@@ -87,13 +87,12 @@ async fn main() {
                 .delete(handlers::field_handler::delete_field),
         )
         // 新增用户管理路由
-        .route("/users", get(handlers::auth_handler::list_users))
+        .route("/users", post(handlers::auth_handler::create_user_admin).get(handlers::auth_handler::list_users))
         .route(
             "/users/:id",
             put(handlers::auth_handler::update_user_role)
                 .delete(handlers::auth_handler::delete_user),
         )
-        .route("/users", post(handlers::auth_handler::create_user_admin).get(handlers::auth_handler::list_users))
         // 修复：建议接口属于管理员生产工具，移入 admin
         .route("/suggest", get(handlers::mapping_handler::suggest_mapping))
         .layer(axum::middleware::from_fn_with_state(
