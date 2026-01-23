@@ -33,6 +33,47 @@ pub struct AppState {
     pub embed_model:  Mutex<TextEmbedding>,
 }
 
+async fn sync_roots_to_qdrant(state: &AppState) {
+    tracing::info!("正在同步词根向量到 Qdrant...");
+    
+    // 1. 从数据库读取所有词根
+    let roots = sqlx::query_as!(
+        crate::models::word_root::WordRoot,
+        "SELECT id, cn_name, en_abbr, en_full_name, associated_terms, remark, created_at FROM standard_word_roots"
+    )
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+
+    if roots.is_empty() { return; }
+
+    let mut points = Vec::new();
+    let mut model = state.embed_model.lock().await;
+
+    for root in &roots {
+        let text = format!("{}: {}", root.cn_name, root.associated_terms.as_deref().unwrap_or(""));
+        if let Ok(embeddings) = model.embed(vec![text], None) {
+            let mut payload_map: std::collections::HashMap<String, qdrant_client::qdrant::Value> = std::collections::HashMap::new();
+            payload_map.insert("cn_name".to_string(), root.cn_name.clone().into());
+            payload_map.insert("en_abbr".to_string(), root.en_abbr.clone().into());
+
+            points.push(qdrant_client::qdrant::PointStruct::new(
+                root.id as u64,
+                embeddings[0].clone(),
+                payload_map
+            ));
+        }
+    }
+
+    // 2. 批量推送到 Qdrant
+    if !points.is_empty() {
+        let _ = state.qdrant.upsert_points(
+            qdrant_client::qdrant::UpsertPointsBuilder::new("word_roots", points)
+        ).await;
+        tracing::info!("完成 {} 条词根向量同步", roots.len());
+    }
+}
+
 async fn init_qdrant_collection(qdrant: &Qdrant) {
     let collection_name = "word_roots";
     // 如果集合不存在则创建
@@ -121,6 +162,8 @@ async fn main() {
         qdrant,
         embed_model: Mutex::new(model),
     });
+
+    sync_roots_to_qdrant(&shared_state).await;
 
     // 4. 配置跨域 (CORS) - 开发阶段允许所有，生产环境需收紧
     let cors = CorsLayer::new()
