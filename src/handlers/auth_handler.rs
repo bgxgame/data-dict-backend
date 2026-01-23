@@ -6,6 +6,7 @@ use jsonwebtoken::{encode, Header, EncodingKey};
 use serde::{Deserialize, Serialize};
 use chrono::Utc;
 use rand::rngs::OsRng; // 修复 OsRng 引用
+use axum::extract::Path;
 
 #[derive(Deserialize)]
 pub struct AuthPayload {
@@ -16,6 +17,13 @@ pub struct AuthPayload {
 #[derive(Serialize)]
 pub struct AuthResponse {
     pub token: String,
+    pub role: String,
+}
+
+#[derive(Deserialize)]
+pub struct AdminCreateUserPayload {
+    pub username: String,
+    pub password: String,
     pub role: String,
 }
 
@@ -77,5 +85,84 @@ pub async fn signup(
     match res {
         Ok(_) => StatusCode::CREATED.into_response(),
         Err(_) => (StatusCode::BAD_REQUEST, "用户已存在或数据库异常").into_response(),
+    }
+}
+
+/// 管理员直接创建用户
+pub async fn create_user_admin(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<AdminCreateUserPayload>,
+) -> impl IntoResponse {
+    let salt = SaltString::generate(&mut rand::rngs::OsRng);
+    let password_hash = Argon2::default()
+        .hash_password(payload.password.as_bytes(), &salt)
+        .map(|h| h.to_string())
+        .unwrap_or_default();
+
+    let res = sqlx::query!(
+        "INSERT INTO users (username, password_hash, role) VALUES ($1, $2, $3)",
+        payload.username, 
+        password_hash, 
+        payload.role
+    )
+    .execute(&state.db)
+    .await;
+
+    match res {
+        Ok(_) => StatusCode::CREATED.into_response(),
+        Err(_) => (StatusCode::BAD_REQUEST, "用户名已存在或参数错误").into_response(),
+    }
+}
+
+/// 1. 获取所有用户列表 (不返回密码哈希)
+pub async fn list_users(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let result = sqlx::query_as!(
+        User,
+        r#"SELECT id, username, password_hash as "password_hash!", role as "role!", created_at FROM users ORDER BY id ASC"#
+    )
+    .fetch_all(&state.db)
+    .await;
+
+    match result {
+        Ok(users) => (StatusCode::OK, Json(users)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// 2. 修改用户角色
+pub async fn update_user_role(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i32>,
+    Json(payload): Json<serde_json::Value>, // 简单接收 {"role": "admin"}
+) -> impl IntoResponse {
+    let role = payload["role"].as_str().unwrap_or("user");
+    
+    let result = sqlx::query!(
+        "UPDATE users SET role = $1 WHERE id = $2",
+        role, id
+    )
+    .execute(&state.db)
+    .await;
+
+    match result {
+        Ok(_) => StatusCode::OK.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// 3. 删除用户
+pub async fn delete_user(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i32>,
+) -> impl IntoResponse {
+    let result = sqlx::query!("DELETE FROM users WHERE id = $1", id)
+        .execute(&state.db)
+        .await;
+
+    match result {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
