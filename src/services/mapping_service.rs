@@ -1,9 +1,12 @@
 use sqlx::PgPool;
 use crate::models::word_root::WordRoot;
-use crate::JIEBA;
 
 pub async fn suggest_field_name(pool: &PgPool, cn_input: &str) -> (String, Vec<String>, Vec<i32>) {
-    let words = JIEBA.cut(cn_input, false);
+        // 获取读锁
+    let jieba_read = crate::JIEBA.read().await;
+    
+    // 使用精准模式分词
+    let words = jieba_read.cut(cn_input, false);
     let mut en_parts = Vec::new();
     let mut missing_words = Vec::new();
     let mut matched_ids = Vec::new(); // 新增：存储匹配到的 ID

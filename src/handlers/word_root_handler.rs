@@ -1,7 +1,7 @@
-use axum::{extract::State, Json, http::StatusCode, response::IntoResponse,extract::Path};
-use std::sync::Arc;
-use crate::AppState; 
 use crate::models::word_root::{CreateWordRoot, WordRoot};
+use crate::AppState;
+use axum::{extract::Path, extract::State, http::StatusCode, response::IntoResponse, Json};
+use std::sync::Arc;
 
 pub async fn create_root(
     State(state): State<Arc<AppState>>,
@@ -24,14 +24,24 @@ pub async fn create_root(
     .await;
 
     match result {
-        Ok(root) => (StatusCode::CREATED, Json(root)).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("DB Error: {}", e)).into_response(),
+        Ok(root) => {
+            // 2. 【实时更新词典】
+            let mut jieba_write = crate::JIEBA.write().await;
+            jieba_write.add_word(&payload.cn_name, Some(99999), None);
+
+            tracing::info!("词典已实时同步新词根: {}", payload.cn_name);
+
+            (StatusCode::CREATED, Json(root)).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("DB Error: {}", e),
+        )
+            .into_response(),
     }
 }
 
-pub async fn list_roots(
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+pub async fn list_roots(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let result = sqlx::query_as!(
         WordRoot,
         r#"
@@ -45,7 +55,11 @@ pub async fn list_roots(
 
     match result {
         Ok(roots) => (StatusCode::OK, Json(roots)).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("DB Error: {}", e)).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("DB Error: {}", e),
+        )
+            .into_response(),
     }
 }
 
@@ -61,7 +75,12 @@ pub async fn update_root(
         SET cn_name = $1, en_abbr = $2, en_full_name = $3, associated_terms = $4, remark = $5
         WHERE id = $6
         "#,
-        payload.cn_name, payload.en_abbr, payload.en_full_name, payload.associated_terms, payload.remark, id
+        payload.cn_name,
+        payload.en_abbr,
+        payload.en_full_name,
+        payload.associated_terms,
+        payload.remark,
+        id
     )
     .execute(&state.db)
     .await;

@@ -10,6 +10,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tokio::sync::RwLock; 
 
 // 声明子模块
 mod handlers;
@@ -18,11 +19,31 @@ mod models;
 mod services;
 
 // 使用 Lazy 确保 Jieba 词库只在启动时加载一次，并全局可用
-pub static JIEBA: Lazy<Jieba> = Lazy::new(Jieba::new);
+pub static JIEBA: Lazy<RwLock<Jieba>> = Lazy::new(|| RwLock::new(Jieba::new()));
 
 // 定义全局状态，方便在 Handler 中获取数据库连接池
 pub struct AppState {
     pub db: PgPool,
+}
+
+async fn init_custom_dictionary(pool: &PgPool) {
+    tracing::info!("正在加载自定义词根词典...");
+    
+    let roots = sqlx::query!("SELECT cn_name FROM standard_word_roots")
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+
+    // 获取写锁
+    let mut jieba_write = JIEBA.write().await;
+    
+    // 修复第二个报错：使用 &roots 引用，避免所有权转移
+    for r in &roots {
+        jieba_write.add_word(&r.cn_name, Some(99999), None);
+    }
+    
+    // 现在可以安全使用 roots.len()，因为 roots 没有被销毁
+    tracing::info!("自定义词典加载完成，共计 {} 个词条", roots.len());
 }
 
 #[tokio::main]
@@ -46,6 +67,8 @@ async fn main() {
         .connect(&database_url)
         .await
         .expect("Failed to create database connection pool");
+
+    init_custom_dictionary(&pool).await;
 
     let shared_state = Arc::new(AppState { db: pool });
 
