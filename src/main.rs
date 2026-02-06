@@ -3,14 +3,17 @@ use argon2::{
     Argon2,
 };
 use axum::{
-    extract::DefaultBodyLimit,
+    extract::{DefaultBodyLimit, State},
+    http::StatusCode,
+    response::IntoResponse,
     routing::{delete, get, post, put},
-    Router,
+    Json, Router,
 };
 use dotenvy::dotenv;
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use jieba_rs::Jieba;
 use once_cell::sync::Lazy;
+use parking_lot::Mutex; // 替换为性能更好的同步锁
 use qdrant_client::qdrant::{
     CreateCollectionBuilder, Distance, PointStruct, UpsertPointsBuilder, VectorParamsBuilder,
 };
@@ -20,7 +23,7 @@ use sqlx::postgres::{PgPool, PgPoolOptions};
 use std::env;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -38,7 +41,25 @@ pub static JIEBA: Lazy<RwLock<Jieba>> = Lazy::new(|| RwLock::new(Jieba::new()));
 pub struct AppState {
     pub db: PgPool,
     pub qdrant: Qdrant,
-    pub embed_model: Mutex<TextEmbedding>,
+    pub embed_model: Mutex<TextEmbedding>, // 使用 Mutex 保证 AI 模型调用的可变引用需求
+}
+
+/// 健康检查 Handler：用于运维平台监测服务可用性
+async fn health_check(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    // 检查数据库连通性
+    match sqlx::query("SELECT 1").execute(&state.db).await {
+        Ok(_) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "status": "up", "database": "connected" })),
+        ),
+        Err(e) => {
+            tracing::error!("Health check failed: database error: {}", e);
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "status": "down", "error": "database_error" })),
+            )
+        }
+    }
 }
 
 /// 确保数据库中存在默认管理员 admin/admin
@@ -86,10 +107,10 @@ async fn sync_roots_to_qdrant(state: &AppState) {
     }
 
     let mut points = Vec::new();
-    let mut model = state.embed_model.lock().await;
+    // 修复点：声明为 mut model
+    let mut model = state.embed_model.lock();
 
     for root in &roots {
-        // 增强向量特征：中文名 + 英文全称 + 同义词
         let text = format!(
             "{} {} {}",
             root.cn_name,
@@ -120,7 +141,7 @@ async fn sync_roots_to_qdrant(state: &AppState) {
     }
 }
 
-/// 同步标准字段向量到 Qdrant (用于用户端模糊/语义搜索)
+/// 同步标准字段向量到 Qdrant
 async fn sync_fields_to_qdrant(state: &AppState) {
     tracing::info!("正在同步 [标准字段] 向量到 Qdrant...");
     let fields = sqlx::query_as!(
@@ -137,10 +158,10 @@ async fn sync_fields_to_qdrant(state: &AppState) {
     }
 
     let mut points = Vec::new();
-    let mut model = state.embed_model.lock().await;
+    // 修复点：声明为 mut model
+    let mut model = state.embed_model.lock();
 
     for field in &fields {
-        // 向量特征：标准中文名 + 关联词
         let text = format!(
             "{} {}",
             field.field_cn_name,
@@ -175,6 +196,7 @@ async fn init_qdrant_collections(qdrant: &Qdrant) {
     let collections = vec!["word_roots", "standard_fields"];
     for name in collections {
         if !qdrant.collection_exists(name).await.unwrap_or(false) {
+            tracing::info!("正在创建向量集合: {}", name);
             qdrant
                 .create_collection(
                     CreateCollectionBuilder::new(name)
@@ -187,7 +209,7 @@ async fn init_qdrant_collections(qdrant: &Qdrant) {
 }
 
 async fn init_custom_dictionary(pool: &PgPool) {
-    tracing::info!("正在加载标准词根词典...");
+    tracing::info!("正在加载分词库自定义词典...");
     let roots = sqlx::query!("SELECT cn_name FROM standard_word_roots")
         .fetch_all(pool)
         .await
@@ -202,35 +224,35 @@ async fn init_custom_dictionary(pool: &PgPool) {
 
 #[tokio::main]
 async fn main() {
+    // 1. 初始化环境变量与日志
     dotenv().ok();
-
-    // 1. 日志初始化
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::from_default_env())
         .with(tracing_subscriber::fmt::layer())
         .init();
 
     tracing::info!(
-        "日志系统初始化完成, 当前级别: {}",
-        std::env::var("RUST_LOG").unwrap_or_default()
+        "数据标准管理系统启动中... 当前级别: {}",
+        std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into())
     );
 
+    // 2. 初始化数据库连接池
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-
-    // 2. 数据库连接池
     let pool = PgPoolOptions::new()
-        .max_connections(10)
+        .max_connections(20) // 高并发场景下建议增加连接数
         .connect(&database_url)
         .await
         .expect("Failed to create database connection pool");
 
-    // 3. 执行启动初始化
+    // 3. 执行启动预热逻辑
     ensure_default_admin(&pool).await;
     init_custom_dictionary(&pool).await;
 
-    // 4. 获取模型缓存路径并初始化 Embedding 模型
+    // 4. 初始化 Embedding 模型与向量库
     let current_dir = env::current_dir().expect("Failed to get current dir");
     let cache_path = current_dir.join("model").join("fastembed_cache");
+
+    tracing::info!("正在离线加载向量模型, 路径: {:?}", cache_path);
 
     let qdrant = Qdrant::from_url("http://localhost:6334").build().unwrap();
     init_qdrant_collections(&qdrant).await;
@@ -240,15 +262,19 @@ async fn main() {
             .with_cache_dir(cache_path)
             .with_show_download_progress(false),
     )
-    .expect("Failed to load embedding model");
+    .map_err(|e| {
+    tracing::error!("模型加载失败！内网部署请检查：1. model/fastembed_cache 目录是否存在 2. 子文件夹名是否正确。错误信息: {}", e);
+    e
+    })
+    .expect("离线模型加载失败");
 
     let shared_state = Arc::new(AppState {
         db: pool,
         qdrant,
-        embed_model: Mutex::new(model),
+        embed_model: Mutex::new(model), // 使用高效同步锁
     });
 
-    // 5. 启动同步
+    // 5. 执行向量数据冷启动同步
     sync_roots_to_qdrant(&shared_state).await;
     sync_fields_to_qdrant(&shared_state).await;
 
@@ -258,12 +284,13 @@ async fn main() {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    // 7. 路由聚合
+    // 7. 定义路由
     let auth_routes = Router::new()
         .route("/signup", post(handlers::auth_handler::signup))
         .route("/login", post(handlers::auth_handler::login));
 
     let public_routes = Router::new()
+        .route("/health", get(health_check)) // 增加监控接口
         .route("/search", get(handlers::field_handler::search_field))
         .route("/tasks", post(handlers::task_handler::submit_task))
         .route(
@@ -280,6 +307,10 @@ async fn main() {
         .route(
             "/roots/batch",
             post(handlers::word_root_handler::batch_create_roots),
+        )
+        .route(
+            "/roots/clear",
+            delete(handlers::word_root_handler::clear_all_roots),
         )
         .route(
             "/roots/:id",
@@ -301,10 +332,6 @@ async fn main() {
                 .delete(handlers::field_handler::delete_field),
         )
         .route(
-            "/roots/clear",
-            delete(handlers::word_root_handler::clear_all_roots),
-        )
-        .route(
             "/users",
             post(handlers::auth_handler::create_user_admin).get(handlers::auth_handler::list_users),
         )
@@ -314,25 +341,29 @@ async fn main() {
                 .delete(handlers::auth_handler::delete_user),
         )
         .route("/suggest", get(handlers::mapping_handler::suggest_mapping))
-        .route("/tasks", get(handlers::task_handler::list_tasks)) // 获取待办
-        .route("/tasks/:id", put(handlers::task_handler::complete_task)) // 标记处理
-        .route("/tasks/count", get(handlers::task_handler::count_unprocessed_tasks))
+        .route("/tasks", get(handlers::task_handler::list_tasks))
+        .route(
+            "/tasks/count",
+            get(handlers::task_handler::count_unprocessed_tasks),
+        )
+        .route("/tasks/:id", put(handlers::task_handler::complete_task))
         .layer(axum::middleware::from_fn_with_state(
             shared_state.clone(),
             middleware::auth::guard,
         ));
 
+    // 8. 组合所有组件并启动
     let app = Router::new()
         .nest("/api/auth", auth_routes)
         .nest("/api/public", public_routes)
         .nest("/api/admin", admin_routes)
-        .layer(DefaultBodyLimit::max(10 * 1024 * 1024)) // 允许 10MB 的请求体
+        .layer(DefaultBodyLimit::max(20 * 1024 * 1024)) // 提高批量导入限制至 20MB
         .with_state(shared_state)
         .layer(cors)
         .layer(TraceLayer::new_for_http());
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
-    tracing::info!("🚀 Server started at http://{}", addr);
+    let addr = SocketAddr::from(([0, 0, 0, 0], 3000)); // 监听所有网卡
+    tracing::info!("🚀 Server deployed successfully at http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();

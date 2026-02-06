@@ -1,21 +1,51 @@
-# Windows 11 单机最强配置（2025 推荐）
+# Qdrant 生产环境高性能配置 (2025 优化版)
 log_level: INFO
 
 storage:
-  storage_path: ./storage          # 数据自动存在当前目录的 storage 文件夹
+  storage_path: ./storage
   snapshots_path: ./snapshots
-  on_disk_payload: true            # 关键！省内存神器，几百万条数据也只需几 GB 内存
+  # 关键：对 Payload（元数据）进行磁盘索引。
+  # 设为 true 后，几百万条数据的 Payload 也只占用极少量内存，非常稳定。
+  on_disk_payload: true
+  
+  # 性能调优：Mmap 阈值
+  # 当向量数量超过这个值时，使用内存映射（Mmap）而不是全部载入内存。
+  # 对于内部数据字典，建议设为 10000，平衡速度与内存。
+  memmap_threshold_kb: 10000 
+
+  # 写入性能控制
+  wal:
+    # 增加 WAL 容量，可以加速大规模 Excel 导入
+    capacity_mb: 128
+    # 强制刷盘的频率，为了稳定性，保持默认或略微增加
+    flush_interval_sec: 5
+
+optimizer:
+  # 关键：索引构建阈值。
+  # 增加此值可加速批量导入速度。如果太小，Excel 还没传完后台就在疯狂建索引，会导致 CPU 占满。
+  # 建议设为 20000 条数据后才开始后台构建精确索引
+  indexing_threshold: 20000
+  # 优化后台清理任务的并发数
+  default_segment_number: 2
 
 performance:
-  max_search_threads: 0            # 0 = 自动跑满所有 CPU 核心，搜索飞快
+  # 0 表示自动检测 CPU 核心数。对于多核服务器，这能保证向量计算满载运行
+  max_search_threads: 0
+  # 处理并发搜索请求的任务池大小，建议设为核心数的 4-8 倍
+  max_optimization_threads: 2
 
 service:
   host: 0.0.0.0
-  http_port: 6333                  # REST API
-  grpc_port: 6334                  # gRPC（Python 客户端常用）
-  enable_cors: true                # 前端直连必开
+  http_port: 6333
+  grpc_port: 6334
+  # 生产环境如果通过后端 API 转发，可以关掉 CORS 增加安全性
+  enable_cors: true
+  # 增加请求大小限制，防止超大型 Excel 导入时数据包被截断
+  max_request_size_mb: 64
 
 cluster:
-  enabled: false                   # 单机一定要关
+  # 单机部署必须保持 false
+  enabled: false
 
-telemetry_disabled: true           # 关闭匿名上报，更清净
+# 隐私与稳定
+telemetry_disabled: true

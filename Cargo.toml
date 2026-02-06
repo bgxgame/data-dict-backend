@@ -31,3 +31,4 @@ rand_core = "0.9.5"
 rand = "0.8"
 qdrant-client = "1.10" # Qdrant 官方客户端
 fastembed = "5.8.1"         # 纯 Rust 实现的向量嵌入引擎
+parking_lot = "0.12.5"

@@ -68,8 +68,6 @@ pub async fn suggest_mapping(
 }
 
 /// 2. 语义相似度搜索词根 (生产辅助)
-/// 场景 A：管理员发现某个词没词根，想搜一下有没有意思相近的存量词根
-/// 场景 B：普通用户搜不到标准字段时，展示“相关词根”供参考
 pub async fn search_similar_roots(
     State(state): State<Arc<AppState>>,
     Query(query): Query<SuggestQuery>,
@@ -81,16 +79,22 @@ pub async fn search_similar_roots(
 
     tracing::info!(">>> 正在检索语义相近词根: q='{}'", input);
 
-    let mut model = state.embed_model.lock().await;
+    // 步骤 1: 向量化文本。
+    // 使用代码块确保 MutexGuard 在向量化完成后立即释放，不阻塞后续异步操作。
+    let query_vector_res = {
+        let mut model = state.embed_model.lock(); // parking_lot 是同步锁，没有 .await
+        model.embed(vec![input], None)
+    };
 
-    // 1. 将查询文本转为向量
-    tracing::debug!("--- 正在计算输入文本向量: '{}'", input);
-    match model.embed(vec![input], None) {
-        Ok(query_vector) => {
-            // 2. 在 Qdrant 的 word_roots 集合中检索最相似的 5 个词根
+    match query_vector_res {
+        Ok(embeddings) => {
+            let query_vector = embeddings[0].clone();
+            tracing::debug!("--- 向量计算完成，准备检索 Qdrant");
+
+            // 步骤 2: 在 Qdrant 的 word_roots 集合中检索
             let search_res = state.qdrant
                 .search_points(
-                    SearchPointsBuilder::new("word_roots", query_vector[0].clone(), 5)
+                    SearchPointsBuilder::new("word_roots", query_vector, 5)
                         .with_payload(true),
                 )
                 .await;
@@ -113,9 +117,10 @@ pub async fn search_similar_roots(
                                 None => "0".to_string(),
                             };
 
+                            // 解析 Payload 字段 (修复类型推断)
                             let cn_name = pay.get("cn_name")
                                 .and_then(|v| v.as_str())
-                                .map(|s| s.as_str()) 
+                                .map(|s| s.as_str()) // 显式转换为 &str
                                 .unwrap_or("")
                                 .to_string();
 

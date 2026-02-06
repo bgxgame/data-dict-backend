@@ -663,6 +663,7 @@ dependencies = [
  "jieba-rs",
  "jsonwebtoken",
  "once_cell",
+ "parking_lot",
  "qdrant-client",
  "rand 0.8.5",
  "rand_core 0.9.5",
