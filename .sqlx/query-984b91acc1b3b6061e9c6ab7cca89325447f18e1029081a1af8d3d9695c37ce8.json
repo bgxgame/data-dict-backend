@@ -1,0 +1,62 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT id, field_cn_name, field_en_name, composition_ids as \"composition_ids!\", \n               data_type, associated_terms, is_standard as \"is_standard!\", created_at\n        FROM standard_fields ORDER BY created_at DESC\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "field_cn_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "field_en_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "composition_ids!",
+        "type_info": "Int4Array"
+      },
+      {
+        "ordinal": 4,
+        "name": "data_type",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "associated_terms",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "is_standard!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "984b91acc1b3b6061e9c6ab7cca89325447f18e1029081a1af8d3d9695c37ce8"
+}

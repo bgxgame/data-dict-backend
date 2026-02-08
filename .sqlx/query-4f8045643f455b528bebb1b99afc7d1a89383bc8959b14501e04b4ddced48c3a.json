@@ -1,0 +1,58 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                SELECT \n                    r.id, r.cn_name, r.en_abbr, r.en_full_name, \n                    r.associated_terms, r.remark, r.created_at\n                FROM UNNEST($1::INT[]) WITH ORDINALITY AS x(id, ord)\n                JOIN standard_word_roots r ON r.id = x.id\n                ORDER BY x.ord\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "cn_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "en_abbr",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "en_full_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "associated_terms",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "remark",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4Array"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "4f8045643f455b528bebb1b99afc7d1a89383bc8959b14501e04b4ddced48c3a"
+}
