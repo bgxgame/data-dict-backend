@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT count(*) FROM standard_word_roots \n             WHERE cn_name ILIKE $1 OR en_abbr ILIKE $1 OR associated_terms ILIKE $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "d6084fc7b0f1e4fc0bcf42a1cff0ac4729d9eae20e174b31539b78a8c8effc55"
+}

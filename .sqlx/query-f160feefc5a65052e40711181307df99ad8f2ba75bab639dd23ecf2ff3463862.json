@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id, cn_name, en_abbr, en_full_name, associated_terms, remark, created_at \n               FROM standard_word_roots \n               WHERE cn_name = $1 \n               OR associated_terms ~* $2",
+  "query": "SELECT * FROM standard_word_roots \n             WHERE cn_name ILIKE $1 OR en_abbr ILIKE $1 OR associated_terms ILIKE $1 \n             ORDER BY created_at DESC LIMIT $2 OFFSET $3",
   "describe": {
     "columns": [
       {
@@ -42,7 +42,8 @@
     "parameters": {
       "Left": [
         "Text",
-        "Text"
+        "Int8",
+        "Int8"
       ]
     },
     "nullable": [
@@ -55,5 +56,5 @@
       true
     ]
   },
-  "hash": "f1f7df0a20e911658415c0428407596120cfbdcaf74bc94e8791092bd79e7974"
+  "hash": "f160feefc5a65052e40711181307df99ad8f2ba75bab639dd23ecf2ff3463862"
 }

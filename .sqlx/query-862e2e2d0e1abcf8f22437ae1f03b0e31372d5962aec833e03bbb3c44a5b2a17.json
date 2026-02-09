@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n        SELECT id, field_cn_name, field_en_name, composition_ids as \"composition_ids!\", \n               data_type, associated_terms, is_standard as \"is_standard!\", created_at\n        FROM standard_fields ORDER BY created_at DESC\n        ",
+  "query": "UPDATE standard_fields SET field_cn_name=$1, field_en_name=$2, composition_ids=$3::INT[], \n           data_type=$4, associated_terms=$5 WHERE id=$6 \n           RETURNING id, field_cn_name, field_en_name, composition_ids as \"composition_ids!\", \n                     data_type, associated_terms, is_standard as \"is_standard!\", created_at",
   "describe": {
     "columns": [
       {
@@ -45,7 +45,14 @@
       }
     ],
     "parameters": {
-      "Left": []
+      "Left": [
+        "Varchar",
+        "Varchar",
+        "Int4Array",
+        "Varchar",
+        "Text",
+        "Int4"
+      ]
     },
     "nullable": [
       false,
@@ -58,5 +65,5 @@
       true
     ]
   },
-  "hash": "984b91acc1b3b6061e9c6ab7cca89325447f18e1029081a1af8d3d9695c37ce8"
+  "hash": "862e2e2d0e1abcf8f22437ae1f03b0e31372d5962aec833e03bbb3c44a5b2a17"
 }

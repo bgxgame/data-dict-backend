@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT * FROM standard_word_roots WHERE cn_name ILIKE $1 OR en_abbr ILIKE $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+  "query": "SELECT id, field_cn_name, field_en_name, composition_ids as \"composition_ids!\", \n               data_type, associated_terms, is_standard as \"is_standard!\", created_at \n               FROM standard_fields ORDER BY created_at DESC LIMIT $1 OFFSET $2",
   "describe": {
     "columns": [
       {
@@ -10,38 +10,42 @@
       },
       {
         "ordinal": 1,
-        "name": "cn_name",
+        "name": "field_cn_name",
         "type_info": "Varchar"
       },
       {
         "ordinal": 2,
-        "name": "en_abbr",
+        "name": "field_en_name",
         "type_info": "Varchar"
       },
       {
         "ordinal": 3,
-        "name": "en_full_name",
-        "type_info": "Varchar"
+        "name": "composition_ids!",
+        "type_info": "Int4Array"
       },
       {
         "ordinal": 4,
+        "name": "data_type",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
         "name": "associated_terms",
         "type_info": "Text"
       },
       {
-        "ordinal": 5,
-        "name": "remark",
-        "type_info": "Text"
+        "ordinal": 6,
+        "name": "is_standard!",
+        "type_info": "Bool"
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "created_at",
         "type_info": "Timestamptz"
       }
     ],
     "parameters": {
       "Left": [
-        "Text",
         "Int8",
         "Int8"
       ]
@@ -53,8 +57,9 @@
       true,
       true,
       true,
+      true,
       true
     ]
   },
-  "hash": "d42d559c8405dd1ecc3a96adae621cd54e69857e09af1df9cf77d0a5cdb1e3cc"
+  "hash": "cbc89b9a82da7c98b0190623dab9aed3203c9d799fc1ebe9717e8b3977725682"
 }
