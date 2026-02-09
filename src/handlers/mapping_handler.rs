@@ -1,15 +1,15 @@
 use axum::{
+    Json,
     extract::{Query, State},
     http::StatusCode,
     response::IntoResponse,
-    Json,
 };
-use qdrant_client::qdrant::{point_id::PointIdOptions, SearchPointsBuilder};
+use qdrant_client::qdrant::{SearchPointsBuilder, point_id::PointIdOptions};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::services::mapping_service;
 use crate::AppState;
+use crate::services::mapping_service;
 
 #[derive(Deserialize)]
 pub struct SuggestQuery {
@@ -17,10 +17,8 @@ pub struct SuggestQuery {
 }
 
 #[derive(Serialize)]
-pub struct SuggestResponse {
-    pub suggested_en: String,
-    pub missing_words: Vec<String>,
-    pub matched_ids: Vec<i32>,
+pub struct SuggestResponseV2 {
+    pub segments: Vec<mapping_service::Segment>,
 }
 
 #[derive(Serialize)]
@@ -46,25 +44,9 @@ pub async fn suggest_mapping(
     tracing::info!(">>> 正在为管理员生成分词建议: q='{}'", input);
 
     // 调用 Service 层逻辑
-    let (suggested_en, missing_words, matched_ids) =
-        mapping_service::suggest_field_name(&state.db, input).await;
+    let segments = mapping_service::suggest_field_name(&state.db, input).await;
 
-    if !missing_words.is_empty() {
-        tracing::warn!("--- 词汇未完全标准化: 缺失词汇={:?}", missing_words);
-    }
-
-    tracing::info!(
-        "<<< 建议生成成功: en_abbr={}, matched_count={}",
-        suggested_en,
-        matched_ids.len()
-    );
-
-    Json(SuggestResponse {
-        suggested_en,
-        missing_words,
-        matched_ids,
-    })
-    .into_response()
+    (StatusCode::OK, Json(SuggestResponseV2 { segments })).into_response()
 }
 
 /// 2. 语义相似度搜索词根 (生产辅助)
@@ -92,10 +74,10 @@ pub async fn search_similar_roots(
             tracing::debug!("--- 向量计算完成，准备检索 Qdrant");
 
             // 步骤 2: 在 Qdrant 的 word_roots 集合中检索
-            let search_res = state.qdrant
+            let search_res = state
+                .qdrant
                 .search_points(
-                    SearchPointsBuilder::new("word_roots", query_vector, 5)
-                        .with_payload(true),
+                    SearchPointsBuilder::new("word_roots", query_vector, 5).with_payload(true),
                 )
                 .await;
 
@@ -118,13 +100,15 @@ pub async fn search_similar_roots(
                             };
 
                             // 解析 Payload 字段 (修复类型推断)
-                            let cn_name = pay.get("cn_name")
+                            let cn_name = pay
+                                .get("cn_name")
                                 .and_then(|v| v.as_str())
                                 .map(|s| s.as_str()) // 显式转换为 &str
                                 .unwrap_or("")
                                 .to_string();
 
-                            let en_abbr = pay.get("en_abbr")
+                            let en_abbr = pay
+                                .get("en_abbr")
                                 .and_then(|v| v.as_str())
                                 .map(|s| s.as_str())
                                 .unwrap_or("")
@@ -144,13 +128,21 @@ pub async fn search_similar_roots(
                 }
                 Err(e) => {
                     tracing::error!("!!! Qdrant 检索词根异常: {}", e);
-                    (StatusCode::INTERNAL_SERVER_ERROR, format!("向量库检索失败: {}", e)).into_response()
-                },
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("向量库检索失败: {}", e),
+                    )
+                        .into_response()
+                }
             }
         }
         Err(e) => {
             tracing::error!("!!! 向量模型计算异常: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("向量计算失败: {}", e)).into_response()
-        },
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("向量计算失败: {}", e),
+            )
+                .into_response()
+        }
     }
 }
