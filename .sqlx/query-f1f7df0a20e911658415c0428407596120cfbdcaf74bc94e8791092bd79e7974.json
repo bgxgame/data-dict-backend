@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT * FROM standard_word_roots \n               WHERE cn_name = $1 \n               OR associated_terms ~* $2 \n               LIMIT 1",
+  "query": "SELECT id, cn_name, en_abbr, en_full_name, associated_terms, remark, created_at \n               FROM standard_word_roots \n               WHERE cn_name = $1 \n               OR associated_terms ~* $2",
   "describe": {
     "columns": [
       {
@@ -55,5 +55,5 @@
       true
     ]
   },
-  "hash": "c9bc2882b7ecae80cd33bfc7c3352d85e1d1d0bbfeb171d12b4a5b38122d1d69"
+  "hash": "f1f7df0a20e911658415c0428407596120cfbdcaf74bc94e8791092bd79e7974"
 }

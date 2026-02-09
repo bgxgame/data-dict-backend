@@ -4,9 +4,11 @@ use crate::AppState;
 use crate::models::field::{CreateFieldRequest, StandardField};
 use crate::models::word_root::WordRoot;
 use crate::handlers::mapping_handler::SuggestQuery; 
-use qdrant_client::qdrant::SearchPointsBuilder;
+use crate::handlers::word_root_handler::{PaginationQuery, PaginatedResponse};
+use qdrant_client::qdrant::{SearchPointsBuilder, PointStruct, UpsertPointsBuilder, Value};
 use qdrant_client::qdrant::point_id::PointIdOptions;
 use qdrant_client::qdrant::{DeletePointsBuilder, Filter};
+use std::collections::HashMap;
 
 /// 1. 创建标准字段
 pub async fn create_field(
@@ -31,33 +33,81 @@ pub async fn create_field(
 
     match result {
         Ok(field) => {
-            tracing::info!("<<< 标准字段创建成功: ID={}, en_name={}", field.id, field.field_en_name);
+            let text_to_embed = format!(
+                "{} {}",
+                field.field_cn_name,
+                field.associated_terms.as_deref().unwrap_or("")
+            );
+
+            let embeddings_res = {
+                let mut model = state.embed_model.lock();
+                model.embed(vec![text_to_embed], None)
+            };
+
+            if let Ok(embeddings) = embeddings_res {
+                // 修复：显式指定 HashMap 的 Value 类型
+                let mut payload_map: HashMap<String, Value> = HashMap::new();
+                payload_map.insert("cn_name".to_string(), field.field_cn_name.clone().into());
+                payload_map.insert("en_name".to_string(), field.field_en_name.clone().into());
+
+                let point = PointStruct::new(field.id as u64, embeddings[0].clone(), payload_map);
+                let _ = state.qdrant.upsert_points(UpsertPointsBuilder::new("standard_fields", vec![point])).await;
+                tracing::info!("<<< 向量库同步完成: ID={}", field.id);
+            }
+
             (StatusCode::CREATED, Json(field)).into_response()
         },
         Err(e) => {
-            tracing::error!("!!! 标准字段创建失败: [{}], Error: {}", payload.field_cn_name, e);
+            tracing::error!("!!! 标准字段插入失败: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, format!("数据库错误: {}", e)).into_response()
         }
     }
 }
 
-/// 2. 获取所有标准字段列表
-pub async fn list_fields(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let result = sqlx::query_as!(
-        StandardField,
-        r#"
-        SELECT id, field_cn_name, field_en_name, composition_ids as "composition_ids!", 
-               data_type, associated_terms, is_standard as "is_standard!", created_at
-        FROM standard_fields ORDER BY created_at DESC
-        "#
-    ).fetch_all(&state.db).await;
+/// 2. 获取分页标准字段列表
+pub async fn list_fields(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<PaginationQuery>,
+) -> impl IntoResponse {
+    let page = query.page.unwrap_or(1);
+    let page_size = query.page_size.unwrap_or(20);
+    let offset = (page - 1) * page_size;
+    let search_q = query.q.as_deref().unwrap_or("");
 
-    match result {
-        Ok(fields) => (StatusCode::OK, Json(fields)).into_response(),
-        Err(e) => {
-            tracing::error!("获取字段列表异常: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
-        }
+    let total = if search_q.is_empty() {
+        sqlx::query_scalar!("SELECT count(*) FROM standard_fields").fetch_one(&state.db).await.unwrap_or(Some(0)).unwrap_or(0)
+    } else {
+        let pattern = format!("%{}%", search_q);
+        sqlx::query_scalar!(
+            "SELECT count(*) FROM standard_fields WHERE field_cn_name ILIKE $1 OR associated_terms ILIKE $1",
+            pattern
+        ).fetch_one(&state.db).await.unwrap_or(Some(0)).unwrap_or(0)
+    };
+
+    let items_res = if search_q.is_empty() {
+        sqlx::query_as!(
+            StandardField,
+            r#"SELECT id, field_cn_name, field_en_name, composition_ids as "composition_ids!", 
+               data_type, associated_terms, is_standard as "is_standard!", created_at 
+               FROM standard_fields ORDER BY created_at DESC LIMIT $1 OFFSET $2"#,
+            page_size, offset
+        ).fetch_all(&state.db).await
+    } else {
+        let pattern = format!("%{}%", search_q);
+        sqlx::query_as!(
+            StandardField,
+            r#"SELECT id, field_cn_name, field_en_name, composition_ids as "composition_ids!", 
+               data_type, associated_terms, is_standard as "is_standard!", created_at 
+               FROM standard_fields 
+               WHERE field_cn_name ILIKE $1 OR associated_terms ILIKE $1 
+               ORDER BY created_at DESC LIMIT $2 OFFSET $3"#,
+            pattern, page_size, offset
+        ).fetch_all(&state.db).await
+    };
+
+    match items_res {
+        Ok(items) => (StatusCode::OK, Json(PaginatedResponse { items, total })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("查询列表失败: {}", e)).into_response()
     }
 }
 
@@ -98,18 +148,16 @@ pub async fn get_field_details(
             match roots {
                 Ok(r) => (StatusCode::OK, Json(r)).into_response(),
                 Err(err) => {
-                    tracing::error!("解析词根数据失败: {}", err);
-                    (StatusCode::INTERNAL_SERVER_ERROR, "解析词根数据失败").into_response()
+                    tracing::error!("解析词根失败: {}", err);
+                    (StatusCode::INTERNAL_SERVER_ERROR, "解析详情失败").into_response()
                 }
             }
         },
         Ok(None) => (StatusCode::NOT_FOUND, "未找到该字段").into_response(),
-        Err(e) => {
-            tracing::error!("查询字段详情失败: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response()
-        },
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
+
 
 /// 4. 更新标准字段
 pub async fn update_field(
@@ -117,24 +165,58 @@ pub async fn update_field(
     Path(id): Path<i32>,
     Json(payload): Json<CreateFieldRequest>,
 ) -> impl IntoResponse {
-    let res = sqlx::query!(
+    tracing::info!(">>> 更新标准字段: ID={}", id);
+
+    // 修复：显式列出返回字段并指定非空别名，解决 Trait From 报错
+    let res = sqlx::query_as!(
+        StandardField,
         r#"UPDATE standard_fields SET field_cn_name=$1, field_en_name=$2, composition_ids=$3::INT[], 
-           data_type=$4, associated_terms=$5 WHERE id=$6"#,
+           data_type=$4, associated_terms=$5 WHERE id=$6 
+           RETURNING id, field_cn_name, field_en_name, composition_ids as "composition_ids!", 
+                     data_type, associated_terms, is_standard as "is_standard!", created_at"#,
         payload.field_cn_name, payload.field_en_name, &payload.composition_ids, 
         payload.data_type, payload.associated_terms, id
-    ).execute(&state.db).await;
+    ).fetch_one(&state.db).await;
 
     match res {
-        Ok(_) => StatusCode::OK.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Ok(field) => {
+            let text = format!("{} {}", field.field_cn_name, field.associated_terms.as_deref().unwrap_or(""));
+            let embeddings_res = {
+                let mut model = state.embed_model.lock();
+                model.embed(vec![text], None)
+            };
+
+            if let Ok(embeddings) = embeddings_res {
+                let mut payload_map: HashMap<String, Value> = HashMap::new();
+                payload_map.insert("cn_name".to_string(), field.field_cn_name.clone().into());
+                payload_map.insert("en_name".to_string(), field.field_en_name.clone().into());
+
+                let point = PointStruct::new(field.id as u64, embeddings[0].clone(), payload_map);
+                let _ = state.qdrant.upsert_points(UpsertPointsBuilder::new("standard_fields", vec![point])).await;
+            }
+            StatusCode::OK.into_response()
+        },
+        Err(e) => {
+            tracing::error!("更新字段失败: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("更新失败: {}", e)).into_response()
+        }
     }
 }
 
 /// 5. 删除标准字段
 pub async fn delete_field(State(state): State<Arc<AppState>>, Path(id): Path<i32>) -> impl IntoResponse {
+    tracing::info!(">>> 删除标准字段: ID={}", id);
+
     match sqlx::query!("DELETE FROM standard_fields WHERE id = $1", id).execute(&state.db).await {
-        Ok(_) => StatusCode::NO_CONTENT.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Ok(res) => {
+            if res.rows_affected() > 0 {
+                let _ = state.qdrant.delete_points(DeletePointsBuilder::new("standard_fields").points(vec![id as u64])).await;
+                StatusCode::NO_CONTENT.into_response()
+            } else {
+                StatusCode::NOT_FOUND.into_response()
+            }
+        },
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("删除失败: {}", e)).into_response(),
     }
 }
 
@@ -143,7 +225,6 @@ pub async fn search_field(
     State(state): State<Arc<AppState>>, 
     Query(query): Query<SuggestQuery>
 ) -> impl IntoResponse {
-    // 路径 A: SQL 模糊匹配
     let q_pattern = format!("%{}%", query.q);
     let sql_results = sqlx::query_as!(
         StandardField,
@@ -159,8 +240,6 @@ pub async fn search_field(
         return Json(sql_results).into_response();
     }
 
-    // 路径 B: 向量语义搜索
-    // 修复：parking_lot::Mutex 锁在 block 结束时自动释放，不阻塞异步 await
     let query_vector_res = {
         let mut model = state.embed_model.lock();
         model.embed(vec![&query.q], None)

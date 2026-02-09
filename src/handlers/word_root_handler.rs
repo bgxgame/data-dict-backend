@@ -36,14 +36,14 @@ pub struct PaginatedResponse<T> {
     pub total: i64,
 }
 
-/// 辅助函数：规范化同义词字符串
+/// 辅助函数：规范化同义词字符串（将各种分隔符统一为空格，压缩多余空格）
 fn normalize_terms(input: Option<String>) -> Option<String> {
     input.map(|s| {
-        s.replace(',', " ")        // 把英文逗号换成空格
-         .replace('，', " ")       // 把中文逗号换成空格
-         .split_whitespace()       // 按任意空白符切分
+        s.replace(',', " ")        // 英文逗号
+         .replace('，', " ")       // 中文逗号
+         .split_whitespace()       // 自动处理多空格
          .collect::<Vec<_>>()
-         .join(" ")                // 用单空格重新连接
+         .join(" ")                // 单空格连接
     })
 }
 
@@ -52,7 +52,9 @@ pub async fn create_root(
     State(state): State<Arc<AppState>>,
     Json(mut payload): Json<CreateWordRoot>,
 ) -> impl IntoResponse {
+    // 规范化输入
     payload.associated_terms = normalize_terms(payload.associated_terms);
+
     tracing::info!(">>> 开始创建词根: cn_name={}, en_abbr={}", payload.cn_name, payload.en_abbr);
 
     let result = sqlx::query_as!(
@@ -62,7 +64,11 @@ pub async fn create_root(
         VALUES ($1, $2, $3, $4, $5)
         RETURNING id, cn_name, en_abbr, en_full_name, associated_terms, remark, created_at
         "#,
-        payload.cn_name, payload.en_abbr, payload.en_full_name, payload.associated_terms, payload.remark
+        payload.cn_name,
+        payload.en_abbr,
+        payload.en_full_name,
+        payload.associated_terms,
+        payload.remark
     )
     .fetch_one(&state.db)
     .await;
@@ -73,14 +79,14 @@ pub async fn create_root(
             let mut jieba_write = JIEBA.write().await;
             jieba_write.add_word(&root.cn_name, Some(99999), None);
 
-            // B. 计算向量并推送到 Qdrant
-            let text_to_embed = format!("{} {} {}", 
-                root.cn_name, 
-                root.en_full_name.as_deref().unwrap_or(""), 
+            // B. 同步向量库
+            let text_to_embed = format!(
+                "{} {} {}",
+                root.cn_name,
+                root.en_full_name.as_deref().unwrap_or(""),
                 root.associated_terms.as_deref().unwrap_or("")
             );
-            
-            // 修复：parking_lot 使用同步锁且限定作用域
+
             let embeddings_res = {
                 let mut model = state.embed_model.lock();
                 model.embed(vec![text_to_embed], None)
@@ -97,9 +103,9 @@ pub async fn create_root(
 
             tracing::info!("<<< 词根创建成功: ID={}", root.id);
             (StatusCode::CREATED, Json(root)).into_response()
-        },
+        }
         Err(e) => {
-            tracing::error!("词根创建失败: {}", e);
+            tracing::error!("!!! 词根创建失败: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, format!("创建失败: {}", e)).into_response()
         }
     }
@@ -120,6 +126,7 @@ pub async fn batch_create_roots(
     let mut processed_items = Vec::new();
     let mut texts_to_embed = Vec::new();
 
+    // 数据清洗与文本准备
     for item in payload.items {
         let norm_terms = normalize_terms(item.associated_terms.clone());
         let embed_text = format!("{} {} {}", 
@@ -131,8 +138,7 @@ pub async fn batch_create_roots(
         processed_items.push((item, norm_terms));
     }
 
-    // 批量计算向量 (修复：同步锁 lock())
-    tracing::info!("--- 正在执行批量 AI 向量化计算...");
+    // 批量向量化
     let all_embeddings = {
         let mut model = state.embed_model.lock();
         match model.embed(texts_to_embed, None) {
@@ -144,7 +150,7 @@ pub async fn batch_create_roots(
         }
     };
 
-    // 执行 SQL 插入
+    // 循环写入 DB
     for (index, (item, norm_terms)) in processed_items.into_iter().enumerate() {
         let res = sqlx::query_as!(
             WordRoot,
@@ -161,8 +167,7 @@ pub async fn batch_create_roots(
         match res {
             Ok(root) => {
                 success_count += 1;
-                let mut jieba_write = JIEBA.write().await;
-                jieba_write.add_word(&root.cn_name, Some(99999), None);
+                JIEBA.write().await.add_word(&root.cn_name, Some(99999), None);
 
                 let mut payload_map: HashMap<String, Value> = HashMap::new();
                 payload_map.insert("cn_name".to_string(), root.cn_name.clone().into());
@@ -170,20 +175,21 @@ pub async fn batch_create_roots(
                 points_to_upsert.push(PointStruct::new(root.id as u64, all_embeddings[index].clone(), payload_map));
             },
             Err(e) => {
-                errors.push(format!("行 {}: 词根 [{}] 失败: {}", index + 1, item.cn_name, e));
+                errors.push(format!("行 {}: [{}] 失败: {}", index + 1, item.cn_name, e));
             }
         }
     }
 
+    // 批量更新向量库
     if !points_to_upsert.is_empty() {
         let _ = state.qdrant.upsert_points(UpsertPointsBuilder::new("word_roots", points_to_upsert)).await;
     }
 
-    tracing::info!("<<< 批量导入完成. 成功: {}", success_count);
+    tracing::info!("<<< 批量处理完成: 成功={}", success_count);
     (StatusCode::OK, Json(ImportResult { success_count, failure_count: errors.len(), errors })).into_response()
 }
 
-/// 3. 获取分页词根列表
+/// 3. 获取分页词根列表 (增加同义词搜索支持)
 pub async fn list_roots(
     State(state): State<Arc<AppState>>,
     Query(query): Query<PaginationQuery>,
@@ -193,18 +199,35 @@ pub async fn list_roots(
     let offset = (page - 1) * page_size;
     let search_q = query.q.as_deref().unwrap_or("");
 
+    // A. 统计总数 (搜索 cn_name, en_abbr, associated_terms)
     let total = if search_q.is_empty() {
-        sqlx::query_scalar!("SELECT count(*) FROM standard_word_roots").fetch_one(&state.db).await.unwrap_or(Some(0)).unwrap_or(0)
+        sqlx::query_scalar!("SELECT count(*) FROM standard_word_roots")
+            .fetch_one(&state.db).await.unwrap_or(Some(0)).unwrap_or(0)
     } else {
         let pattern = format!("%{}%", search_q);
-        sqlx::query_scalar!("SELECT count(*) FROM standard_word_roots WHERE cn_name ILIKE $1 OR en_abbr ILIKE $1", pattern).fetch_one(&state.db).await.unwrap_or(Some(0)).unwrap_or(0)
+        sqlx::query_scalar!(
+            "SELECT count(*) FROM standard_word_roots 
+             WHERE cn_name ILIKE $1 OR en_abbr ILIKE $1 OR associated_terms ILIKE $1", 
+            pattern
+        ).fetch_one(&state.db).await.unwrap_or(Some(0)).unwrap_or(0)
     };
 
+    // B. 获取分页数据
     let items_res = if search_q.is_empty() {
-        sqlx::query_as!(WordRoot, "SELECT * FROM standard_word_roots ORDER BY created_at DESC LIMIT $1 OFFSET $2", page_size, offset).fetch_all(&state.db).await
+        sqlx::query_as!(
+            WordRoot, 
+            "SELECT * FROM standard_word_roots ORDER BY created_at DESC LIMIT $1 OFFSET $2", 
+            page_size, offset
+        ).fetch_all(&state.db).await
     } else {
         let pattern = format!("%{}%", search_q);
-        sqlx::query_as!(WordRoot, "SELECT * FROM standard_word_roots WHERE cn_name ILIKE $1 OR en_abbr ILIKE $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3", pattern, page_size, offset).fetch_all(&state.db).await
+        sqlx::query_as!(
+            WordRoot, 
+            "SELECT * FROM standard_word_roots 
+             WHERE cn_name ILIKE $1 OR en_abbr ILIKE $1 OR associated_terms ILIKE $1 
+             ORDER BY created_at DESC LIMIT $2 OFFSET $3", 
+            pattern, page_size, offset
+        ).fetch_all(&state.db).await
     };
 
     match items_res {
@@ -230,16 +253,24 @@ pub async fn update_root(
         WHERE id = $6
         RETURNING id, cn_name, en_abbr, en_full_name, associated_terms, remark, created_at
         "#,
-        payload.cn_name, payload.en_abbr, payload.en_full_name, payload.associated_terms, payload.remark, id
+        payload.cn_name,
+        payload.en_abbr,
+        payload.en_full_name,
+        payload.associated_terms,
+        payload.remark,
+        id
     )
     .fetch_one(&state.db)
     .await;
 
     match result {
         Ok(root) => {
-            let text = format!("{} {} {}", root.cn_name, root.en_full_name.as_deref().unwrap_or(""), root.associated_terms.as_deref().unwrap_or(""));
+            let text = format!("{} {} {}", 
+                root.cn_name, 
+                root.en_full_name.as_deref().unwrap_or(""), 
+                root.associated_terms.as_deref().unwrap_or("")
+            );
             
-            // 修复：同步锁 lock()
             let embeddings_res = {
                 let mut model = state.embed_model.lock();
                 model.embed(vec![text], None)
@@ -253,8 +284,11 @@ pub async fn update_root(
                 let _ = state.qdrant.upsert_points(UpsertPointsBuilder::new("word_roots", vec![point])).await;
             }
             StatusCode::OK.into_response()
-        },
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("更新失败: {}", e)).into_response(),
+        }
+        Err(e) => {
+            tracing::error!("!!! 更新失败: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "更新失败").into_response()
+        }
     }
 }
 
@@ -273,13 +307,14 @@ pub async fn delete_root(
             } else {
                 StatusCode::NOT_FOUND.into_response()
             }
-        },
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("删除异常: {}", e)).into_response(),
     }
 }
 
-/// 6. 一键清空
+/// 6. 一键清空所有词根
 pub async fn clear_all_roots(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    tracing::warn!("⚠️ 执行全量清空词根库");
     let db_res = sqlx::query!("TRUNCATE TABLE standard_word_roots RESTART IDENTITY").execute(&state.db).await;
 
     match db_res {
