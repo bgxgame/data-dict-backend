@@ -1,0 +1,68 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO standard_fields (field_cn_name, field_en_name, composition_ids, data_type, associated_terms)\n        VALUES ($1, $2, $3::INT[], $4, $5)\n        RETURNING id, field_cn_name, field_en_name, composition_ids as \"composition_ids!\", \n                  data_type, associated_terms, is_standard as \"is_standard!\", created_at\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "field_cn_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "field_en_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "composition_ids!",
+        "type_info": "Int4Array"
+      },
+      {
+        "ordinal": 4,
+        "name": "data_type",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "associated_terms",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "is_standard!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Varchar",
+        "Int4Array",
+        "Varchar",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "bbc6f9ae6d00f9f2317658fe171e3460dcfa0c566de74596d64559353a59f4af"
+}

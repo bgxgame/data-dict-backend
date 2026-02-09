@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE standard_fields SET field_cn_name=$1, field_en_name=$2, composition_ids=$3::INT[], \n           data_type=$4, associated_terms=$5 WHERE id=$6",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Varchar",
+        "Int4Array",
+        "Varchar",
+        "Text",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "15df8cc987253138a7968eb65a9c29659fe6383ef72fcd7a3a8bf99065a5034b"
+}

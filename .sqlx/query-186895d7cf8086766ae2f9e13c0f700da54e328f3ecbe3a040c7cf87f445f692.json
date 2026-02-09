@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "TRUNCATE TABLE standard_word_roots RESTART IDENTITY",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "186895d7cf8086766ae2f9e13c0f700da54e328f3ecbe3a040c7cf87f445f692"
+}

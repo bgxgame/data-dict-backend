@@ -1,23 +1,23 @@
 use argon2::{
-    password_hash::{PasswordHasher, SaltString},
     Argon2,
+    password_hash::{PasswordHasher, SaltString},
 };
 use axum::{
+    Json, Router,
     extract::{DefaultBodyLimit, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{delete, get, post, put},
-    Json, Router,
 };
 use dotenvy::dotenv;
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use jieba_rs::Jieba;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex; // 替换为性能更好的同步锁
+use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{
     CreateCollectionBuilder, Distance, PointStruct, UpsertPointsBuilder, VectorParamsBuilder,
 };
-use qdrant_client::Qdrant;
 use rand::rngs::OsRng;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use std::env;
@@ -254,7 +254,9 @@ async fn main() {
 
     tracing::info!("正在离线加载向量模型, 路径: {:?}", cache_path);
 
-    let qdrant = Qdrant::from_url("http://localhost:6334").build().unwrap();
+    let qdrant_url = std::env::var("QDRANT_URL").unwrap_or_else(|_| "http://localhost:6334".into());
+    tracing::info!("正在连接 Qdrant: {}", qdrant_url);
+    let qdrant = Qdrant::from_url(&qdrant_url).build().unwrap();
     init_qdrant_collections(&qdrant).await;
 
     let model = TextEmbedding::try_new(

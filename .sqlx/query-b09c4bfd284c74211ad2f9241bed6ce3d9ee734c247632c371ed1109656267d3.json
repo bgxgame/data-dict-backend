@@ -1,0 +1,59 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT * FROM standard_word_roots ORDER BY created_at DESC LIMIT $1 OFFSET $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "cn_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "en_abbr",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "en_full_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "associated_terms",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "remark",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "b09c4bfd284c74211ad2f9241bed6ce3d9ee734c247632c371ed1109656267d3"
+}

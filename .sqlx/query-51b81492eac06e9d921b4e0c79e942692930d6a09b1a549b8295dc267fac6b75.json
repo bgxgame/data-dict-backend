@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT cn_name FROM standard_word_roots",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "cn_name",
+        "type_info": "Varchar"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "51b81492eac06e9d921b4e0c79e942692930d6a09b1a549b8295dc267fac6b75"
+}
